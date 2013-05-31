@@ -1,0 +1,8 @@
+<h1>IMI REST API Version 0.1.0</h1>
+
+<h2>Products {{ database }}</h2>
+<ul>
+	<li><a href="{{ url_for('products') }}">List all Products</a></li>
+	<li><a href="{{ url_for('products',product_id='2') }}">Specific Product</a></li>
+	<li><a href="{{ url_for('products',category='Abrasives') }}">Abrasive Products Only</a></li>
+</ul>
