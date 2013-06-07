@@ -4,7 +4,7 @@ from datetime import datetime
 import os
 import shutil
 import subprocess
-
+from decimal import *
 
 class ImiModel(object):
 
@@ -14,24 +14,13 @@ class ImiModel(object):
 		self.conn = psycopg2.connect(database_url)
 
 		# list of the different geographic extents we can use to group data from largest to smallest
-		self.geo_group_by_levels = ["nation","region","state","msa","county","postal code", "postal_code"]
-
-		# list of the different segmentation extents we can use to group data from largest to smallest
-		self.seg_group_by_levels = [ "division", "major", "industry", "code" ]
+		self.group_by = ["nation","region","state","msa","county","postal code", "postal_code", "sic","naics","company", "company_size" ]
 
 	def close(self):
 		self.conn.close()
 
-
-	def valid_geo_group_by(self, group_by=None ):
-		if group_by in self.geo_group_by_levels:
-			return True
-		return False
-
-	def valid_seg_group_by(self, group_by=None ):
-		if group_by in ["division","code"]:
-			return True
-		return False
+	def valid_group_by(self, group_by=None ):
+		return group_by in self.group_by
 
 	def valid_seg_type(self, seg_type=None ):
 		if seg_type in ["naics","sic"]:
@@ -64,12 +53,30 @@ class ImiModel(object):
 
 		return False
 
+	def geo_filter_string_to_array(self, geo=None):
+		# geo might be in string form ie: US.CO.037,US.AZ.011 convert this to [{"nation":"US","state_abbrev":"CO","county_fips":"037"},{"nation":"US","state_abbrev":"AZ","county_fips":"011"}]
+		if type(geo) == type(""):
+			expanded = []
+			for f in geo.split(","):
+				g = {}
+				parts = f.split(".")
+				if len(parts) == 3:
+					g['county_fips'] = parts[2]
+				if len(parts) >= 2:
+					g['state_abbrev'] = parts[1]
+				g['nation'] = parts[0]
+				expanded.append(g)					
+			geo = expanded		
+		return geo
 
 	def valid_geo_filter(self, geo=None ):
 		"""Check to see if a geo filter list is valid"""
 
-		if geo is None or geo == [] or geo == [{}]:
+		if geo is None or geo == [] or geo == [{}]  or geo == "":
 			return True
+
+		if type(geo) == type(""):		
+			geo = self.geo_filter_string_to_array(geo)
 
 		if type(geo) is not type([]):
 			return False
@@ -81,12 +88,11 @@ class ImiModel(object):
 			if type(g) is not type({}):
 				return False
 			f = self.geo_filter_to_sql(g)
-
 			if f is None:
 				all_good = False
 				break
 
-			cur.execute("""select * from geo l where ({}) limit 1""".format(f) )
+			cur.execute("""select * from geo g where ({}) limit 1""".format(f) )
 			row = cur.fetchone()
 			if row is None:
 				all_good = False
@@ -103,22 +109,26 @@ class ImiModel(object):
 
 		# check that all keys are valid
 		for key in f.keys():
-			if key not in self.geo_group_by_levels:
+			if key not in ["nation","region","state","msa","county","postal code", "postal_code", "county_fips","state_abbrev"]:
 				return None
 
 		filter_query = None
 		cur = self.conn.cursor()
 
 		if "nation" in f and "county" in f:
-			filter_query = cur.mogrify("(l.nation=%s and l.state=%s and l.county=%s)", (f["nation"],f["state"],f["county"]) )
+			filter_query = cur.mogrify("(g.nation=%s and g.state=%s and g.county=%s)", (f["nation"],f["state"],f["county"]) )
+		elif "nation" in f and "county_fips" in f:
+			filter_query = cur.mogrify("(g.nation=%s and g.state_abbrev=%s and g.county_fips=%s)", (f["nation"],f["state_abbrev"],f["county_fips"]) )
 		elif "nation" in f and "msa" in f:
-			filter_query = cur.mogrify("(l.nation=%s and l.msa=%s)", (f["nation"],f["msa"]) )
+			filter_query = cur.mogrify("(g.nation=%s and g.msa=%s)", (f["nation"],f["msa"]) )
 		elif "nation" in f and "state" in f:
-			filter_query = cur.mogrify("(l.nation=%s and l.state=%s)", (f["nation"],f["state"]) )
+			filter_query = cur.mogrify("(g.nation=%s and g.state=%s)", (f["nation"],f["state"]) )
+		elif "nation" in f and "state_abbrev" in f:
+			filter_query = cur.mogrify("(g.nation=%s and g.state_abbrev=%s)", (f["nation"],f["state_abbrev"]) )
 		elif "nation" in f and "region" in f:
-			filter_query = cur.mogrify("(l.nation=%s and l.region=%s)", (f["nation"],f["region"]) )
+			filter_query = cur.mogrify("(g.nation=%s and g.region=%s)", (f["nation"],f["region"]) )
 		elif "nation" in f:
-			filter_query = cur.mogrify("(l.nation=%s)", (f["nation"],) )	
+			filter_query = cur.mogrify("(g.nation=%s)", (f["nation"],) )	
 
 		cur.close()
 		return filter_query
@@ -135,11 +145,31 @@ class ImiModel(object):
 		return True
 
 
+	def seg_filter_string_to_array(self, seg=None):
+		# might in string form ie "2400:2600,3000:3100" convert to ["2400:2600","3000:3100"]
+		if type(seg) == type(""):
+			f = seg.split(",")
+
+			# test to see if string is list of sics or naics
+			test = f[0].split(":")[0]
+
+			if len(test) == 4:
+				seg = {"seg_type":"sic","filter":f}
+			elif len(test) == 6:
+				seg = {"seg_type":"naics","filter":f}
+		return seg		
+
 	def valid_seg_filter(self, seg=None ):
 		"""Check to see if a seg filter list is valid"""
 
 		if seg is None or seg == {}:
 			return True
+
+		if type(seg) == type(""):
+			seg = self.seg_filter_string_to_array(seg)
+
+		if seg == "":
+			seg = {"seg_type":"sic","filter":None}
 
 		if type(seg) is not type({}):
 			return False
@@ -207,7 +237,6 @@ class ImiModel(object):
 				all_good = False
 				break
 
-
 			cur.close()
 
 
@@ -248,6 +277,9 @@ class ImiModel(object):
 		if not self.valid_geo_filter(geo_filter):
 			raise Exception("geo_filter {}".format(geo_filter))
 
+		if type(geo_filter) == type(""):
+			geo_filter = self.geo_filter_string_to_array(geo_filter)
+
 		filter_query = ""
 		for f in geo_filter:
 			if filter_query != "":
@@ -260,6 +292,9 @@ class ImiModel(object):
 
 		if not self.valid_seg_filter(seg_filter):
 			raise Exception("seg_filter {}".format(seg_filter))
+
+		if type(seg_filter) == type(""):
+			seg_filter = self.seg_filter_string_to_array(seg_filter)
 
 		filter_query = ""
 
@@ -333,9 +368,9 @@ class ImiModel(object):
 		return words
 
 
-	def geo_query( self, group_by=None, geo_filter=None, seg_filter=None, products=None  ):
+	def demand( self, group_by=None, geo_filter=None, seg_filter=None, products=None, limit=100  ):
 		"""Show demand and employee count totals for given inputs"""
-		if not self.valid_geo_group_by(group_by):
+		if not self.valid_group_by(group_by):
 			raise Exception("group_by {}".format(group_by))
 		if not self.valid_geo_filter(geo_filter):
 			raise Exception("geo_filter {}".format(geo_filter))
@@ -348,27 +383,32 @@ class ImiModel(object):
 		geo_query = self.build_geo_filter_where_query(geo_filter=geo_filter)
 		seg_query = self.build_seg_filter_where_query(seg_filter=seg_filter)
 
-		geo_columns = "l.nation"
+		geo_columns = "g.nation"
 		header = [ group_by.capitalize(),"Demand", "Companies" ]
 		if group_by == "postal_code":
-			geo_columns = "l.nation,l.state,l.county,lpad(l.state_fips,2,'0') || lpad(l.county_fips,3,'0'),l.postal_code"
-			header = [ "Nation","State","County","County FIPS","Postal Code","Demand","Companies" ] 
-			#geo_columns = "l.nation,l.state,l.county,l.postal_code"
-			#header = [ "Nation","State","County","Postal Code","Demand" ] 
+			geo_columns = "g.nation,g.state,g.county,lpad(g.state_fips,2,'0') || lpad(g.county_fips,3,'0'),g.postal_code"
+			header = [ "nation","state","county","countyFips","postalCode","demand","companies" ] 
 		elif group_by == "county":
-			geo_columns = "l.nation,l.state,l.county,lpad(l.state_fips,2,'0') || lpad(l.county_fips,3,'0')"
-			header = [ "Nation","State","County","FIPS","Demand","Companies" ] 
-			#geo_columns = "l.nation,l.state,l.county"
-			#header = [ "Nation","State","County","Demand" ] 
+			geo_columns = "g.nation,g.state,g.county,lpad(g.state_fips,2,'0') || lpad(g.county_fips,3,'0')"
+			header = [ "nation","state","county","fips","demand","companies" ] 
 		elif group_by == "msa":
-			geo_columns = "l.nation,l.msa"
-			header = [ "Nation","MSA","Demand","Companies" ] 
+			geo_columns = "g.nation,g.msa"
+			header = [ "nation","msa","demand","companies" ] 
 		elif group_by == "state":
-			geo_columns = "l.nation,l.state"
-			header = [ "Nation","State","Demand","Companies" ] 
+			geo_columns = "g.nation,g.state"
+			header = [ "nation","state","demand","companies" ] 
 		elif group_by == "region":
-			geo_columns = "l.nation,l.region"
-			header = [ "Nation","Region","Demand","Companies" ] 
+			geo_columns = "g.nation,g.region"
+			header = [ "nation","region","demand","companies" ] 
+		elif group_by == "naics":
+			geo_columns = "l.naics,n.description, n.parent, n.parent_description"
+			header = [ "naics","description","parent","parentDescription" ] 
+		elif group_by == "sic":
+			geo_columns = "l.sic,s.description, s.parent, s.parent_description"
+			header = [ "sic","description","parent","parentDescription" ] 
+		elif group_by == "company_size":
+			geo_columns = "l.company_size"
+			header = [ "companySize" ] 
 
 		# there are cases where the geo filter requires the min extent table rather than the group by table. if you want to group by msa by filter by specific counties for example
 		extent = self.min_extent( geo_filter )
@@ -385,180 +425,8 @@ class ImiModel(object):
 			extent = group_by
 
 		cur = self.conn.cursor()
-		"""cur.execute('''
-			select 
-			{},
-			round(sum(l.employees*r.ratio)) as demand,
-			count(*) as companies
-			from locations l
-			inner join (select sic, sum(ratio) as ratio
-			from ratios r 
-			where product_id=ANY(%s)
-			group by sic) as r on r.sic=l.sic
-			inner join geo g on g.id=l.geo_id
-			where ({}) and ({})
-			group by {}
-			order by demand desc
-			'''.format(geo_columns,geo_query,seg_query,geo_columns), (products,))
-		"""
-		cur.execute('''
-			select 
-			{},
-			round(sum(l.employees*r.ratio)) as demand,
-			sum(companies) as companies
-			from locations_{} l
-			inner join (select sic, sum(ratio) as ratio
-			from ratios r 
-			where product_id=ANY(%s)
-			group by sic) as r on r.sic=l.sic
-			where ({}) and ({})
-			group by {}
-			order by demand desc
-			'''.format(geo_columns,extent,geo_query,seg_query,geo_columns), (products,))
-		results = []
-		total_demand = 0
-		total_companies = 0
-		for row in cur:
-			results.append( row )
-			total_companies += int(row[-1])
-			total_demand += int(row[-2])
-
-		cur.close()
-
-		to_return = {
-			"header":header,
-			"results":results,
-			"total_demand": total_demand,
-			"total_companies": total_companies
-		}
-
-		return to_return
-
-
-	
-
-	def seg_query( self, group_by=None, seg_type=None, geo_filter=None, seg_filter=None, products=None  ):
-		"""Show demand and employee count totals for given inputs"""
-		if not self.valid_seg_type(seg_type):
-			raise Exception("seg_type {}".format(seg_type))
-		if not self.valid_seg_group_by(group_by):
-			raise Exception("group_by {}".format(group_by))
-		if not self.valid_geo_filter(geo_filter):
-			raise Exception("geo_filter {}".format(geo_filter))
-		if not self.valid_products(products):
-			raise Exception("products {}".format(products))
-		if not self.valid_seg_filter(seg_filter):
-			raise Exception("seg_filter {}".format(seg_filter))
-
-		# build the geo part of the where query
-		geo_query = self.build_geo_filter_where_query(geo_filter=geo_filter)
-		seg_query = self.build_seg_filter_where_query(seg_filter=seg_filter)
-
-		extent = self.min_extent( geo_filter )
-
-		cur = self.conn.cursor()
-
-		if group_by == "division":
-			'''cur.execute("""
-				select s.parent,s.parent_description, 
-				round(sum(l.employees*r.ratio)) as demand,
-				count(*) as companies
-				from locations l
-				inner join (select sic, sum(ratio) as ratio
-					from ratios r 
-					where product_id=ANY(%s)
-					group by sic) as r on r.sic=l.sic
-				inner join geo g on g.id=l.geo_id
-				left join {} s on s.{}=l.{}
-				where ({}) and ({})
-				group by s.parent, s.parent_description
-				order by demand desc
-			""".format(seg_type,seg_type, seg_type, geo_query, seg_query), (products, ) )
-			'''
-			cur.execute("""
-				select s.parent,s.parent_description, 
-				round(sum(l.employees*r.ratio)) as demand,
-				sum(companies) as companies
-				from locations_{} l
-				inner join (select sic, sum(ratio) as ratio
-					from ratios r 
-					where product_id=ANY(%s)
-					group by sic) as r on r.sic=l.sic
-				left join {} s on s.{}=l.{}
-				where ({}) and ({})
-				group by s.parent, s.parent_description
-				order by demand desc
-			""".format(extent,seg_type,seg_type, seg_type, geo_query, seg_query), (products, ) )
-		else:
-			'''cur.execute("""
-				select l.{},s.description,
-				round(sum(l.employees*r.ratio)) as demand,
-				count(*) as companies
-				from locations l
-				inner join (select sic, sum(ratio) as ratio
-					from ratios r 
-					where product_id=ANY(%s)
-					group by sic) as r on r.sic=l.sic
-				inner join geo g on g.id=l.geo_id
-				left join {} s on s.{}=l.{}
-				where ({}) and ({})
-				group by l.{},s.description
-				order by demand desc
-			""".format(seg_type, seg_type, seg_type, seg_type, geo_query, seg_query, seg_type), (products, ) )
-			'''
-			cur.execute("""
-				select l.{},s.description,
-				round(sum(l.employees*r.ratio)) as demand,
-				sum(companies) as companies
-				from locations_{} l
-				inner join (select sic, sum(ratio) as ratio
-					from ratios r 
-					where product_id=ANY(%s)
-					group by sic) as r on r.sic=l.sic
-				left join {} s on s.{}=l.{}
-				where ({}) and ({})
-				group by l.{},s.description
-				order by demand desc
-			""".format(seg_type,extent, seg_type, seg_type, seg_type, geo_query, seg_query, seg_type), (products, ) )
-
-		results = []
-		header = [ seg_type.upper(), "Description", "Demand", "Companies" ]
-		total_demand = 0
-		total_companies = 0
-		for row in cur:
-			results.append( row )
-			total_demand += int(row[-2])
-			total_companies += int(row[-1])
-
-		cur.close()
-
-		to_return = {
-			"header":header,
-			"results":results,
-			"total_demand": total_demand,
-			"total_companies": total_companies
-		}
-
-		return to_return
-
-
-	def prospects( self, geo_filter=None, seg_filter=None, products=None, limit=100 ):
-		"""list of the top prospects for a product"""
-		if not self.valid_geo_filter(geo_filter):
-			raise Exception("geo_filter {}".format(geo_filter))
-		if not self.valid_products(products):
-			raise Exception("products {}".format(products))
-		if not self.valid_seg_filter(seg_filter):
-			raise Exception("seg_filter {}".format(seg_filter))
-
-		if not type(limit) == type(0):
-			raise Exception("limit {}".format(limit))
-
-		geo_query = self.build_geo_filter_where_query(geo_filter=geo_filter)
-		seg_query = self.build_seg_filter_where_query(seg_filter=seg_filter)
-
-		cur = self.conn.cursor()
-		cur.execute( """
+		if group_by == 'company':
+			cur.execute( """
 			select
 			l.duns, l.name, l.url, l.employees, l.sic, s.description, l.naics, n.description,
 			l.sales, g.nation, g.region, g.state, g.msa, g.county, g.postal_code, l.lon, l.lat,
@@ -575,92 +443,71 @@ class ImiModel(object):
 			where ({}) and ({})
 			order by demand desc
 			limit {}
-		""".format(geo_query.replace("l.","g."),seg_query,limit), (products,))
+			""".format(geo_query,seg_query,limit), (products,))
+
+			header = ["duns","name","url","employees","sic","sicDescription", "naics", "naicsDescription", "sales", "country","region","state","msa","county","postalCode","longitude","latitude", "Demand" ]
+		else:
+			"""cur.execute('''
+				select 
+				{},
+				round(sum(l.employees*r.ratio)) as demand,
+				count(*) as companies
+				from locations l
+				inner join (select sic, sum(ratio) as ratio
+				from ratios r 
+				where product_id=ANY(%s)
+				group by sic) as r on r.sic=l.sic
+				inner join geo g on g.id=l.geo_id
+				left join sic s on s.sic=l.sic
+				left join naics n on n.naics=l.naics
+				where ({}) and ({})
+				group by {}
+				order by demand desc
+				'''.format(geo_columns,geo_query,seg_query,geo_columns), (products,))
+			"""
+			cur.execute('''
+				select 
+				{},
+				round(sum(l.employees*r.ratio)) as demand,
+				sum(companies) as companies
+				from locations_{} l
+				inner join (select sic, sum(ratio) as ratio
+				from ratios r 
+				where product_id=ANY(%s)
+				group by sic) as r on r.sic=l.sic
+				inner join geo_{} g on g.id=l.geo_id
+				left join sic s on s.sic=l.sic
+				left join naics n on n.naics=l.naics
+				where ({}) and ({})
+				group by {}
+				order by demand desc
+				'''.format(geo_columns,extent,extent,geo_query,seg_query,geo_columns), (products,))
 
 		results = []
-		header = ["DUNS","Name","URL","Employees","SIC","SIC Description", "NAICS", "NAICS Description", "Sales", "Country","Region","State","MSA","County","Postal Code","Longitude","Latitude", "Demand" ]
 		total_demand = 0
 		total_companies = 0
 		for row in cur:
-			results.append( row )
-			total_demand += int(row[-1])
-			total_companies += 1
+			r = []
+			for j in row:
+				if type(j) == type(Decimal('123')):
+					r.append(int(j))
+				else:
+					r.append(j)
+			results.append( r )
+			if group_by == 'company':
+				total_companies += 1
+				total_demand += int(row[-1])
+			else:
+				total_companies += int(row[-1])
+				total_demand += int(row[-2])
 
 		cur.close()
 
 		to_return = {
 			"header":header,
 			"results":results,
-			"total_demand": total_demand,
-			"total_companies": total_companies
-		}
-
-		return to_return
-
-
-	def company_size_query( self, geo_filter=None, seg_filter=None, products=None  ):
-		"""Show demand and employee count totals for given inputs"""
-		if not self.valid_geo_filter(geo_filter):
-			raise Exception("geo_filter {}".format(geo_filter))
-		if not self.valid_products(products):
-			raise Exception("products {}".format(products))
-		if not self.valid_seg_filter(seg_filter):
-			raise Exception("seg_filter {}".format(seg_filter))
-
-		# build the geo part of the where query
-		geo_query = self.build_geo_filter_where_query(geo_filter=geo_filter)
-		seg_query = self.build_seg_filter_where_query(seg_filter=seg_filter)
-		extent = self.min_extent( geo_filter )
-
-		cur = self.conn.cursor()
-
-		'''cur.execute("""
-			select 
-			l.company_size, 
-			round(sum(l.employees*r.ratio)) as demand,
-			count(*) as companies
-			from locations l
-			inner join (select sic, sum(ratio) as ratio
-				from ratios r 
-				where product_id=ANY(%s)
-				group by sic) as r on r.sic=l.sic
-			inner join geo g on g.id=l.geo_id
-			where ({}) and ({})
-			group by l.company_size
-			order by demand desc ;
-		""".format(geo_query, seg_query ), (products, ) )
-		'''
-		cur.execute("""
-			select 
-			l.company_size, 
-			round(sum(l.employees*r.ratio)) as demand,
-			sum(companies) as companies
-			from locations_{} l
-			inner join (select sic, sum(ratio) as ratio
-				from ratios r 
-				where product_id=ANY(%s)
-				group by sic) as r on r.sic=l.sic
-			where ({}) and ({})
-			group by l.company_size
-			order by demand desc ;
-		""".format(extent,geo_query, seg_query ), (products, ) )
-
-		header = ["Company Size","Demand", "Companies"]
-		results = []
-		total_demand = 0
-		total_companies = 0
-		for row in cur:
-			results.append( row )
-			total_demand += int(row[-2])
-			total_companies += int(row[-1])
-
-		cur.close()
-
-		to_return = {
-			"header":header,
-			"results":results,
-			"total_demand": total_demand,
-			"total_companies": total_companies
+			"demand": total_demand,
+			"companies": total_companies
 		}
 
 		return to_return
@@ -710,10 +557,11 @@ class ImiModel(object):
 					from ratios r 
 					where product_id=ANY(%s)
 					group by sic) as r on r.sic=l.sic
+				inner join geo_{} g on g.id=l.geo_id
 				left join sic s on s.sic=l.sic
 				where ({}) and ({})
 				group by l.company_size, l.sic, s.description
-		""".format( extent,geo_query, seg_query ), (products, ) )
+		""".format( extent,extent,geo_query, seg_query ), (products, ) )
 		header = [ "Company Size", "SIC","Description", "Companies"]
 		results = []
 		total = 0
@@ -762,67 +610,6 @@ class ImiModel(object):
 				"duns":duns,
 				"demand":0
 			}
-
-		return to_return
-
-
-	def total_query( self, geo_filter=None, seg_filter=None, products=None  ):
-		"""Show total demand"""
-		if not self.valid_geo_filter(geo_filter):
-			raise Exception("geo_filter {}".format(geo_filter))
-		if not self.valid_products(products):
-			raise Exception("products {}".format(products))
-		if not self.valid_seg_filter(seg_filter):
-			raise Exception("seg_filter {}".format(seg_filter))
-
-		# build the geo part of the where query
-		geo_query = self.build_geo_filter_where_query(geo_filter=geo_filter)
-		seg_query = self.build_seg_filter_where_query(seg_filter=seg_filter)
-		extent = self.min_extent( geo_filter )
-
-		cur = self.conn.cursor()
-	
-		'''cur.execute("""
-			select 
-			round(sum(l.employees*r.ratio)) as demand,
-			count(*) as companies
-			from locations l
-			inner join (select sic, sum(ratio) as ratio
-				from ratios r 
-				where product_id=ANY(%s)
-				group by sic) as r on r.sic=l.sic
-			inner join geo g on g.id=l.geo_id
-			where ({}) and ({})
-		""".format(geo_query, seg_query ), (products, ) )
-		'''
-		cur.execute("""
-			select 
-			round(sum(l.employees*r.ratio)) as demand,
-			sum(companies) as companies
-			from locations_{} l
-			inner join (select sic, sum(ratio) as ratio
-				from ratios r 
-				where product_id=ANY(%s)
-				group by sic) as r on r.sic=l.sic
-			where ({}) and ({})
-		""".format(extent,geo_query, seg_query ), (products, ) )
-
-		header = ["Demand","Companies"]
-		result = cur.fetchone()
-		total_demand = result[0]
-		total_companies = result[1]
-
-		if total_demand is None or total_companies is None:
-			total_demand = 0
-			total_companies = 0
-
-		cur.close()
-
-		to_return = {
-			"header":header,
-			"total_demand": total_demand,
-			"total_companies": total_companies
-		}
 
 		return to_return
 

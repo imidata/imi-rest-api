@@ -47,7 +47,13 @@ def products(product_id=None):
 
 @app.route('/1/demand')
 def demand():
-	return jsonify(result="demand")
+	group_by=str(request.args.get('group_by', None))
+	products=str(request.args.get('products', None))
+	geo_filter=str(request.args.get('geo', None))
+	products = products.split(",")
+	result = g.db.demand(group_by=group_by,geo_filter=str(geo_filter),products=products)
+	app.logger.debug(result)
+	return jsonify(result)
 
 
 if __name__ == '__main__':
