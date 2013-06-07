@@ -249,6 +249,9 @@ class ImiModel(object):
 		if not self.valid_geo_filter(geo_filter):
 			raise Exception("geo_filter {}".format(geo_filter))
 
+		if type(geo_filter) == type(""):
+			geo_filter = self.geo_filter_string_to_array(geo_filter)
+
 		extents = []
 		for geo in geo_filter:
 			for h in geo:
@@ -259,11 +262,11 @@ class ImiModel(object):
 			return "postal code"
 		elif "postal_code" in extents:
 			return "postal_code"
-		elif "county" in extents:
+		elif "county" in extents or "county_fips" in extents:
 			return "county"
 		elif "msa" in extents:
 			return "msa"
-		elif "state" in extents:
+		elif "state" in extents or 'state_abbrev' in extents:
 			return "state"
 		elif "region" in extents:
 			return "region"
