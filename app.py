@@ -45,6 +45,9 @@ def products(product_id=None):
 	return jsonify(products=to_return)
 
 
+@app.route('/1/demand')
+def demand():
+	return jsonify(result="demand")
 
 
 if __name__ == '__main__':
