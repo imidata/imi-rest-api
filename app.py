@@ -10,7 +10,7 @@ DATABASE_URL = os.getenv('DATABASE_URL',None)
 
 @app.before_request
 def before_request():
-    g.db = imimodel.ImiModel(DATABASE_URL)
+	g.db = imimodel.ImiModel(DATABASE_URL)
 
 @app.teardown_request
 def teardown_request(exception):
