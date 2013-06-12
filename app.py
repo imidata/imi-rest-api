@@ -56,6 +56,22 @@ def demand():
 	return jsonify(result)
 
 
+@app.route('/1/location/<duns>')
+def location(duns=None):
+	products=str(request.args.get('products', None))
+	try: 
+		if products == 'None':
+			result = g.db.location_demand(duns=duns)
+		else:
+			products = products.split(",")
+			result = g.db.location_demand(duns=duns,products=products)
+		return jsonify(result)
+	except:
+		response = jsonify(type="error",message="invalid duns number",)
+		response.status_code = 422
+		return response
+
+
 if __name__ == '__main__':
 	print "local"
 	app.run(debug=DEBUG)

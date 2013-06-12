@@ -587,32 +587,83 @@ class ImiModel(object):
 		"""estimate demand for a location"""
 		if not self.valid_duns(duns):
 			raise Exception("duns {}".format(duns))
-		if not self.valid_products(products):
-			raise Exception("products {}".format(products))
+		if products:
+			if not self.valid_products(products):
+				raise Exception("products {}".format(products))
 
 		cur = self.conn.cursor()
-		cur.execute("""
-			select l.duns, round(sum(l.employees*r.ratio)) as demand
-			from locations l
-			inner join ratios r on r.sic=l.sic
-			where 
-			l.duns=%s
-			and r.product_id=ANY(%s)
-			group by l.duns
-		""", (duns, products ) )
-		header = [ "Duns","Demand"]
-		result = cur.fetchone()
 
-		if result:
-			to_return = {
-				"duns":duns,
-				"demand":result[1]
-			}
+		#check that the duns number exists and is valid
+		cur.execute( """
+		select
+		l.duns, l.name, l.url, l.employees, l.sic, s.description, l.naics, n.description,
+		l.sales, g.nation, g.region, g.state, g.msa, g.county, g.postal_code, l.lon, l.lat
+		from
+		locations l
+		inner join geo g on g.id=l.geo_id
+		left join sic s on s.sic=l.sic
+		left join naics n on n.naics=l.naics
+		where duns=%s
+		limit 1
+		""", (duns,))
+
+		result = cur.fetchone()
+		if not result:
+			raise Exception("invalid DUNS {}".format(duns))
+
+		to_return = {
+			"duns": result[0],
+			"name": result[1],
+			"url": result[2],
+			"employees": result[3],
+			"sic": result[4],
+			"sic_description": result[5],
+			"naics":result[6],
+			"naics_description": result[7],
+			"sales": result[8],
+			"nation": result[9],
+			"region": result[10],
+			"state": result[11],
+			"msa": result[12],
+			"county": result[13],
+			"postal_code": result[14],
+			"lon": result[15],
+			"lat": result[16]
+		}
+
+
+		if products:
+			cur.execute("""
+				select r.product_id, p.description, r.ratio*l.employees as demand from locations l
+				inner join ratios r on r.sic=l.sic
+				inner join products p on p.product_id=r.product_id
+				inner join sic s on s.sic=l.sic
+				inner join geo g on g.id=l.geo_id
+				where duns=%s
+				and p.product_id=ANY(%s)
+				order by demand desc;""",(duns,products) )
 		else:
-			to_return = {
-				"duns":duns,
-				"demand":0
-			}
+			cur.execute("""
+				select r.product_id, p.description, r.ratio*l.employees as demand from locations l
+				inner join ratios r on r.sic=l.sic
+				inner join products p on p.product_id=r.product_id
+				inner join sic s on s.sic=l.sic
+				inner join geo g on g.id=l.geo_id
+				where duns=%s
+				order by demand desc;""",(duns,) )
+
+		products = []
+		demand = 0
+		for row in cur:
+			products.append({
+				"product_id": row[0],
+				"description": row[1],
+				"demand": int(row[2])
+				})
+			demand += int(row[2])
+
+		to_return["products"] = products
+		to_return['demand'] = demand
 
 		return to_return
 
