@@ -398,8 +398,8 @@ class ImiModel(object):
 			geo_columns = "g.nation,g.msa"
 			header = [ "nation","msa","demand","companies" ] 
 		elif group_by == "state":
-			geo_columns = "g.nation,g.state"
-			header = [ "nation","state","demand","companies" ] 
+			geo_columns = "g.nation,g.state,g.state_abbrev"
+			header = [ "nation","state","abbrev","demand","companies" ] 
 		elif group_by == "region":
 			geo_columns = "g.nation,g.region"
 			header = [ "nation","region","demand","companies" ] 
