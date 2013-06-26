@@ -100,7 +100,6 @@ def demand():
 	geo_filter=str(request.args.get('geo', None))
 	products = products.split(",")
 	result = g.db.demand(group_by=group_by,geo_filter=str(geo_filter),products=products)
-	app.logger.debug(result)
 	return jsonify(result)
 
 
